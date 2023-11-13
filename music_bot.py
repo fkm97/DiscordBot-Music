@@ -33,7 +33,15 @@ sp = spotipy.Spotify(auth_manager=SpotifyClientCredentials(client_id=SPOTIFY_CLI
 @bot.event
 async def on_ready():
     print(f'Logged in as {bot.user.name} (ID: {bot.user.id})')
+    print('Connected to the following servers:')
+    for guild in bot.guilds:
+        print(f'- {guild.name} (ID: {guild.id})')
+        voice_channel = None
+        if guild.voice_client:  # If the bot is connected to a voice channel in this guild
+            voice_channel = guild.voice_client.channel
+        print(f'  Voice Channel: {voice_channel.name if voice_channel else "None"}')
     print('------')
+
 
 # Queue
 song_queue = deque()
