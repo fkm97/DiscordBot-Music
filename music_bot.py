@@ -5,9 +5,11 @@ import spotipy
 from spotipy.oauth2 import SpotifyClientCredentials
 from collections import deque
 from discord import Embed
+from discord.ui import Button, View
 import asyncio
 import datetime
 import random
+import itertools
 # In your main script file
 from credentials import DISCORD_BOT_TOKEN, SPOTIFY_CLIENT_ID, SPOTIFY_CLIENT_SECRET
 
@@ -25,6 +27,9 @@ intents.message_content = True
 
 # Discord bot setup
 bot = commands.Bot(command_prefix='!', intents=intents)
+
+#Override help
+bot.remove_command('help')
 
 # Spotify setup
 sp = spotipy.Spotify(auth_manager=SpotifyClientCredentials(client_id=SPOTIFY_CLIENT_ID,
@@ -114,6 +119,7 @@ class YTDLSource(discord.PCMVolumeTransformer):
 # Join voice channel
 @bot.command()
 async def join(ctx):
+    """Joins Voice Channel."""
     # Check if the command author is connected to a voice channel
     if ctx.author.voice is None:
         await ctx.send("You are not connected to a voice channel.")
@@ -124,33 +130,40 @@ async def join(ctx):
     try:
         await channel.connect()
         await ctx.send(f"Connected to {channel.name}")
+        print(f"joined {channel.name}")
     except discord.ClientException as e:
         await ctx.send(f"An error occurred: {e}")
 
 # Leave voice channel
 @bot.command()
 async def leave(ctx):
+    """Leaves Voice Channel"""
+    channel = ctx.author.voice.channel    
     if ctx.voice_client:
         await ctx.voice_client.disconnect()
         await ctx.send("Left the voice channel.")
+        print(f"Left {channel.name}")
     else:
         await ctx.send("I am not in a voice channel.")
 
 # Play a YouTube video based on song name
 @bot.command()
 async def play(ctx, *, song_name):
+    """Plays the song. Format !play [songName]"""
     # Check if the command author is connected to a voice channel
     if not ctx.author.voice:
         await ctx.send("You are not connected to a voice channel.")
         return
 
     # Join the voice channel if the bot is not already in one
+    channel = ctx.author.voice.channel
     if not ctx.voice_client:
         await ctx.author.voice.channel.connect()
+        print(f"Joined {channel.name}")
 
     # Add the song to the queue
     if song_name:
-        song_query = song_name + " lyrics"  # Adding 'lyrics' to the search query
+        song_query = song_name + " audio"  # Adding 'audio' to the search query
         song_queue.append(song_query)
         await ctx.send(f"Added {song_name} to the queue.")
 
@@ -158,10 +171,81 @@ async def play(ctx, *, song_name):
     if not ctx.voice_client.is_playing():
         await start.invoke(ctx)
 
+@bot.command()
+async def remove(ctx, index: int):
+    """"Removed a song from the queue. Format: !remove [queueNumber]"""
+    global song_queue
+    try:
+        # Convert deque to a list to remove an item at a specific index
+        song_list = list(song_queue)
+        # We subtract 1 from the index because lists are zero-indexed
+        removed_song = song_list.pop(index - 1)
+        # Convert list back to deque
+        song_queue = deque(song_list)
+        await ctx.send(f"Removed {removed_song} from the queue.")
+        print(f"Removed {removed_song} from the queue")
+    except IndexError:
+        await ctx.send("Could not find a song with that index.")
+    except ValueError:
+        await ctx.send("The index provided is not a valid number.")
+
+@bot.command()
+async def shift(ctx, index: int):
+    """Shifts the song to the top of the queue. Format: !shft [queueNumber]"""
+    global song_queue
+    try:
+        # Convert deque to a list for manipulation
+        song_list = list(song_queue)
+
+        # Shift the song to the top of the queue
+        song = song_list.pop(index - 1)  # Adjust for zero-based index
+        song_list.insert(0, song)  # Insert at the top of the list
+
+        # Convert list back to deque
+        song_queue = deque(song_list)
+
+        await ctx.send(f"Shifted {song} to the top of the queue.")
+    except IndexError:
+        await ctx.send("Could not find a song at that queue position.")
+    except ValueError:
+        await ctx.send("Please provide a valid number.")
+
+
+
+
+@bot.command()
+async def upcoming(ctx):
+    """This command shows the next ten upcoming songs"""
+    # Get the next ten songs in the queue
+    upcoming_songs = list(itertools.islice(song_queue, 0, 10))
+    if not upcoming_songs:
+        await ctx.send("There are no upcoming songs.")
+    else:
+        message = "\n".join(f"{index + 1}. {song}" for index, song in enumerate(upcoming_songs))
+        await ctx.send(f"Next ten songs in the queue:\n{message}")
+
+@bot.command()
+async def help(ctx, command: str = None):
+    """Shows this message."""
+    if command is None:
+        #Show all commands
+        embed = discord.Embed(title="Bot Commands", description="List of available commands:", color=discord.Color.blue())
+        for cmd in bot.commands:
+            embed.add_field(name=cmd.name, value=cmd.help,inline=False)
+        await ctx.send(embed=embed)
+    else:
+        #Show help for specific command
+        cmd = bot.get_command(command)
+        if cmd is None:
+            await ctx.send("No such command.")
+            return
+        embed= discord.Embed(title=f"Help for `{cmd.name}`",description=cmd.help or "No description", color=discord.Color.blue())
+        await ctx.send(embed=embed)
         
 # Command to start playing the queue
 @bot.command()
 async def start(ctx):
+    """Starts the bot, Use if not starting"""
     if not ctx.voice_client:
         await join.invoke(ctx)
     if not ctx.voice_client.is_playing():
@@ -170,10 +254,10 @@ async def start(ctx):
 # New shuffle command
 @bot.command()
 async def shuffle(ctx):
+    """Shuffles queue"""
     random.shuffle(song_queue)
     await ctx.send("Queue shuffled.")
 
-# Function to play the next song in the queue
 async def play_next(ctx):
     if len(song_queue) > 0 and ctx.voice_client:
         song = song_queue.popleft()
@@ -185,10 +269,25 @@ async def play_next(ctx):
         
         # Send an embed with song details, thumbnail, and duration
         embed = Embed(title="Now Playing", description=f"[{player.title}]({player.url})", color=discord.Color.blue())
+        print(f"Now Playing {player.title}")
         embed.add_field(name="Duration", value=duration)
-        if player.data.get('thumbnail'):  # If a thumbnail is present
+        if player.data.get('thumbnail'):
             embed.set_thumbnail(url=player.data['thumbnail'])
-        await ctx.send(embed=embed)
+
+        # Create a Button to skip the song
+        skip_button = Button(label="Skip", style=discord.ButtonStyle.red)
+
+        async def skip_button_callback(interaction):
+            await skip(ctx)
+            await interaction.response.edit_message(content="Skipped!", view=None)
+
+        skip_button.callback = skip_button_callback
+
+        # Create a view and add the button to it
+        view = View()
+        view.add_item(skip_button)
+
+        await ctx.send(embed=embed, view=view)
     else:
         await ctx.send("The queue is empty.")
 
@@ -196,6 +295,7 @@ async def play_next(ctx):
 # Play a Spotify playlist
 @bot.command()
 async def spotify(ctx, *, url: str):
+    """Use this to load a spotify playlist. Format: !spotify [spotifyLink]"""
     # Extract the playlist ID from the provided URL
     try:
         playlist_id = url.split('playlist/')[1].split('?')[0]
@@ -221,17 +321,24 @@ async def spotify(ctx, *, url: str):
 # Show the current queue
 @bot.command()
 async def queue(ctx):
+    """Shows entire queue. (If this does not work use !upcoming)"""
     queue_list = "\n".join(song_queue) or "The queue is empty."
     await ctx.send(f"Current queue:\n{queue_list}")
 
-# Skip the current song
 @bot.command()
 async def skip(ctx):
+    """Function to skip the current song."""
     if ctx.voice_client and ctx.voice_client.is_playing():
         ctx.voice_client.stop()
-        await play_next(ctx)
     else:
         await ctx.send("No song is currently playing.")
+
+# Modify the skip command to use the skip function
+@bot.command()
+async def skip_command(ctx):
+    await skip(ctx)
+
+
 
 # Run the bot
 bot.run(DISCORD_BOT_TOKEN)
