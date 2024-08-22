@@ -24,6 +24,10 @@ intents.presences = True
 intents.typing = True
 intents.message_content = True
 
+# Create a global variable to store the task
+spamming_task = None
+spam_target = None
+
 
 # Discord bot setup
 bot = commands.Bot(command_prefix='!', intents=intents)
@@ -333,10 +337,42 @@ async def skip(ctx):
     else:
         await ctx.send("No song is currently playing.")
 
+@bot.command()
+async def clear(ctx):
+    """Clears the entire song queue."""
+    global song_queue
+    song_queue.clear()
+    await ctx.send("The song queue has been cleared.")
+    print("Song queue cleared.")
+
+
 # Modify the skip command to use the skip function
 @bot.command()
 async def skip_command(ctx):
     await skip(ctx)
+
+@bot.command()
+async def spam(ctx, user: discord.User):
+    """Starts spamming the mentioned user. Format: !spam [tagUserHere]"""
+    global spamming_task, spam_target
+    
+    if spamming_task is None:
+        spam_target = user
+        spamming_task = spam_user.start(ctx, user)
+        await ctx.send(f"Started spamming {user.mention}.")
+    else:
+        spam_user.cancel()
+        spamming_task = None
+        spam_target = None
+        await ctx.send("Stopped spamming.")
+
+@tasks.loop(seconds=0.5)
+async def spam_user(ctx, user: discord.User):
+    await ctx.send(f"{user.mention}")
+
+@spam_user.before_loop
+async def before_spam_user():
+    await bot.wait_until_ready()
 
 
 
