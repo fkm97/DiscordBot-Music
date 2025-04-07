@@ -58,7 +58,7 @@ song_queue = deque()
 # Youtube DL options
 ytdl_format_options = {
     'format': 'bestaudio/best',
-    'restrictfilenames': True,
+    'cookiefile': 'cookies.txt',
     'noplaylist': True,
     'nocheckcertificate': True,
     'ignoreerrors': False,
@@ -67,10 +67,10 @@ ytdl_format_options = {
     'no_warnings': True,
     'default_search': 'auto',
     'source_address': '0.0.0.0',
-    'cookiefile': 'cookies.txt',
-    'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',  # Reconnect options
-    'options': '-vn -bufsize 4096k'  # Increase buffer size
+    'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
+    'options': '-vn -bufsize 4096k'
 }
+
 
 ffmpeg_options = {
     'options': '-vn',
@@ -82,20 +82,20 @@ ytdl = youtube_dl.YoutubeDL(ytdl_format_options)
 
 class YTDLSource(discord.PCMVolumeTransformer):
     ytdl_format_options = {
-        'format': 'bestaudio/best',
-        'restrictfilenames': True,
-        'noplaylist': True,
-        'nocheckcertificate': True,
-        'ignoreerrors': False,
-        'logtostderr': False,
-        'quiet': True,
-        'no_warnings': True,
-        'default_search': 'auto',
-        'source_address': '0.0.0.0',
-        'cookiefile': 'cookies.txt',
-        'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',  # Reconnect options
-    'options': '-vn -bufsize 4096k'  # Increase buffer size
-    }
+    'format': 'bestaudio/best',
+    'cookiefile': 'cookies.txt',
+    'noplaylist': True,
+    'nocheckcertificate': True,
+    'ignoreerrors': False,
+    'logtostderr': False,
+    'quiet': True,
+    'no_warnings': True,
+    'default_search': 'auto',
+    'source_address': '0.0.0.0',
+    'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
+    'options': '-vn -bufsize 4096k'
+}
+
 
     ffmpeg_options = {
     'options': '-vn',
@@ -112,15 +112,25 @@ class YTDLSource(discord.PCMVolumeTransformer):
         self.url = ""
 
     @classmethod
-    async def from_url(cls, url, *, loop=None, stream=False):
-        data = await loop.run_in_executor(None, lambda: cls.ytdl.extract_info(url, download=not stream))
+    async def from_url(cls, url, *, loop=None, stream=True):
+        loop = loop or asyncio.get_event_loop()
+
+        try:
+            data = await loop.run_in_executor(None, lambda: cls.ytdl.extract_info(url, download=not stream))
+        except Exception:
+            if stream:
+                # Fallback to downloading if streaming fails
+                return await cls.from_url(url, loop=loop, stream=False)
+            else:
+                raise
 
         if 'entries' in data:
-            # Take first item from a playlist
             data = data['entries'][0]
 
         filename = data['url'] if stream else cls.ytdl.prepare_filename(data)
         return cls(discord.FFmpegPCMAudio(filename, **cls.ffmpeg_options), data=data)
+
+
 
 # Join voice channel
 @bot.command()
