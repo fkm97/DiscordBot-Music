@@ -51,6 +51,13 @@ async def on_ready():
         print(f'  Voice Channel: {voice_channel.name if voice_channel else "None"}')
     print('------')
 
+def generate_progress_bar(current: int, total: int, bar_length: int = 20) -> str:
+    progress_ratio = current / total if total else 0
+    filled_length = int(bar_length * progress_ratio)
+    bar = "▰" * filled_length + "▱" * (bar_length - filled_length)
+    return bar
+
+
 
 # Queue
 song_queue = deque()
@@ -227,19 +234,6 @@ async def shift(ctx, index: int):
         await ctx.send("Please provide a valid number.")
 
 
-
-
-@bot.command()
-async def upcoming(ctx):
-    """This command shows the next ten upcoming songs"""
-    # Get the next ten songs in the queue
-    upcoming_songs = list(itertools.islice(song_queue, 0, 10))
-    if not upcoming_songs:
-        await ctx.send("There are no upcoming songs.")
-    else:
-        message = "\n".join(f"{index + 1}. {song}" for index, song in enumerate(upcoming_songs))
-        await ctx.send(f"Next ten songs in the queue:\n{message}")
-
 @bot.command()
 async def help(ctx, command: str = None):
     """Shows this message."""
@@ -275,37 +269,80 @@ async def shuffle(ctx):
     await ctx.send("Queue shuffled.")
 
 async def play_next(ctx):
-    if len(song_queue) > 0 and ctx.voice_client:
-        song = song_queue.popleft()
-        player = await YTDLSource.from_url(song, loop=bot.loop, stream=True)
-        ctx.voice_client.play(player, after=lambda e: asyncio.run_coroutine_threadsafe(play_next(ctx), bot.loop))
-        
-        # Get the duration of the video
-        duration = str(datetime.timedelta(seconds=player.data['duration']))
-        
-        # Send an embed with song details, thumbnail, and duration
-        embed = Embed(title="Now Playing", description=f"[{player.title}]({player.url})", color=discord.Color.blue())
-        print(f"Now Playing {player.title}")
-        embed.add_field(name="Duration", value=duration)
-        if player.data.get('thumbnail'):
-            embed.set_thumbnail(url=player.data['thumbnail'])
+    if ctx.voice_client is None or not ctx.voice_client.is_connected():
+        try:
+            await ctx.author.voice.channel.connect()
+        except Exception as e:
+            await ctx.send(f"Failed to join voice channel: {e}")
+            return
 
-        # Create a Button to skip the song
-        skip_button = Button(label="Skip", style=discord.ButtonStyle.red)
-
-        async def skip_button_callback(interaction):
-            await skip(ctx)
-            await interaction.response.edit_message(content="Skipped!", view=None)
-
-        skip_button.callback = skip_button_callback
-
-        # Create a view and add the button to it
-        view = View()
-        view.add_item(skip_button)
-
-        await ctx.send(embed=embed, view=view)
-    else:
+    if len(song_queue) == 0:
         await ctx.send("The queue is empty.")
+        return
+
+    song = song_queue.popleft()
+    
+    try:
+        player = await YTDLSource.from_url(song, loop=bot.loop, stream=True)
+    except Exception as e:
+        await ctx.send(f"Failed to load song: {song}\nError: {e}")
+        return
+
+    if not player:
+        await ctx.send("Error loading the track.")
+        return
+
+    # Play the song
+    def after_playing(error):
+        if error:
+            print(f"Playback error: {error}")
+        fut = asyncio.run_coroutine_threadsafe(play_next(ctx), bot.loop)
+        try:
+            fut.result()
+        except Exception as e:
+            print(f"Error in after callback: {e}")
+
+    ctx.voice_client.play(player, after=after_playing)
+
+    # Display song info with progress bar
+    duration_secs = player.data.get('duration', 0)
+    duration_str = str(datetime.timedelta(seconds=duration_secs))
+    embed = Embed(title="Now Playing", description=f"[{player.title}]({player.data.get('webpage_url', '')})", color=discord.Color.blue())
+    embed.add_field(name="Duration", value=f"▰▱▱▱▱▱▱▱▱▱ 0:00 / {duration_str}")
+    if player.data.get('thumbnail'):
+        embed.set_thumbnail(url=player.data['thumbnail'])
+
+    # Skip button setup
+    skip_button = Button(label="Skip", style=discord.ButtonStyle.red)
+
+    async def skip_button_callback(interaction):
+        if ctx.voice_client.is_playing():
+            ctx.voice_client.stop()
+            await interaction.response.edit_message(content="⏭️ Skipped!", view=None)
+
+    skip_button.callback = skip_button_callback
+    view = View()
+    view.add_item(skip_button)
+
+    now_playing_msg = await ctx.send(embed=embed, view=view)
+
+    # Progress bar updater
+    async def update_progress():
+        start_time = datetime.datetime.utcnow()
+        while ctx.voice_client.is_playing():
+            elapsed = (datetime.datetime.utcnow() - start_time).total_seconds()
+            bar_length = 20
+            filled = int(bar_length * elapsed / duration_secs)
+            empty = bar_length - filled
+            progress_bar = "▰" * filled + "▱" * empty
+            elapsed_str = str(datetime.timedelta(seconds=int(elapsed)))
+            embed.set_field_at(0, name="Duration", value=f"{progress_bar} {elapsed_str} / {duration_str}")
+            await now_playing_msg.edit(embed=embed)
+            await asyncio.sleep(1)
+
+    bot.loop.create_task(update_progress())
+
+
 
 
 # Play a Spotify playlist
@@ -337,9 +374,43 @@ async def spotify(ctx, *, url: str):
 # Show the current queue
 @bot.command()
 async def queue(ctx):
-    """Shows entire queue. (If this does not work use !upcoming)"""
-    queue_list = "\n".join(song_queue) or "The queue is empty."
-    await ctx.send(f"Current queue:\n{queue_list}")
+    """Shows the entire queue with pagination."""
+    if not song_queue:
+        await ctx.send("The queue is empty.")
+        return
+
+    song_list = list(song_queue)
+    items_per_page = 10
+    total_pages = (len(song_list) + items_per_page - 1) // items_per_page
+
+    current_page = 0
+
+    def generate_page(page_num):
+        start = page_num * items_per_page
+        end = start + items_per_page
+        chunk = song_list[start:end]
+        message = "\n".join(f"{i + 1 + start}. {song}" for i, song in enumerate(chunk))
+        return f"**Queue Page {page_num + 1}/{total_pages}**\n\n{message}"
+
+    class QueuePaginator(View):
+        def __init__(self):
+            super().__init__(timeout=60)
+            self.page = 0
+
+        @discord.ui.button(label="◀️ Previous", style=discord.ButtonStyle.secondary)
+        async def previous(self, interaction: discord.Interaction, button: Button):
+            if self.page > 0:
+                self.page -= 1
+                await interaction.response.edit_message(content=generate_page(self.page), view=self)
+
+        @discord.ui.button(label="Next ▶️", style=discord.ButtonStyle.secondary)
+        async def next(self, interaction: discord.Interaction, button: Button):
+            if self.page < total_pages - 1:
+                self.page += 1
+                await interaction.response.edit_message(content=generate_page(self.page), view=self)
+
+    view = QueuePaginator()
+    await ctx.send(generate_page(0), view=view)
 
 @bot.command()
 async def skip(ctx):
