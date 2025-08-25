@@ -181,8 +181,20 @@ async def play(ctx, *, song_name):
     # Join the voice channel if the bot is not already in one
     channel = ctx.author.voice.channel
     if not ctx.voice_client:
-        await ctx.author.voice.channel.connect()
-        print(f"Joined {channel.name}")
+        if ctx.voice_client and ctx.voice_client.is_connecting():
+            await ctx.send("Still connecting to voice. Please wait.")
+            return
+        try:
+            await ctx.author.voice.channel.connect(reconnect=True)
+        except discord.ClientException:
+            await ctx.send("Failed to connect to the voice channel. Trying again...")
+            await asyncio.sleep(5)
+            try:
+                await ctx.author.voice.channel.connect(reconnect=True)
+            except Exception:
+                await ctx.send("Failed to connect after retrying.")
+                return
+
 
     # Add the song to the queue
     if song_name:
