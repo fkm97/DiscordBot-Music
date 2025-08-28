@@ -1,0 +1,81 @@
+# HOW TO LAUNCH IN EC2 INSTANCE
+
+## 1) One-time setup on the EC2 box
+
+# Install OS deps
+sudo apt update
+sudo apt install -y python3-venv python3-pip ffmpeg
+
+# Create/activate a venv (if you haven’t already)
+cd /home/ubuntu/DiscordBot-Music
+python3 -m venv .venv
+source .venv/bin/activate
+pip install --upgrade pip
+pip install -r requirements.txt
+deactivate
+
+# Make sure cookies file (if used) is readable by the service user
+# (the service below runs as 'ubuntu'; adjust if you use a different user)
+sudo chown ubuntu:ubuntu /home/ubuntu/DiscordBot-Music/cookies.txt 2>/dev/null || true
+chmod 600 /home/ubuntu/DiscordBot-Music/cookies.txt 2>/dev/null || true
+
+
+## 2) Create the systemd unit
+
+sudo tee /etc/systemd/system/discordbot.service >/dev/null <<'EOF'
+[Unit]
+Description=Discord Music Bot
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu/DiscordBot-Music
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/home/ubuntu/DiscordBot-Music/.venv/bin/python /home/ubuntu/DiscordBot-Music/music_bot.py
+Restart=always
+RestartSec=5
+# Log to journalctl
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+
+## 3) Enable + start it
+
+sudo systemctl daemon-reload
+sudo systemctl enable --now discordbot
+
+
+## 4) Useful commands
+
+# Live logs
+journalctl -u discordbot -f
+
+# Status / start / stop / restart
+systemctl status discordbot
+sudo systemctl restart discordbot
+sudo systemctl stop discordbot
+
+
+## 5) Deploying updates later
+
+# Pull code and reinstall deps if needed
+cd /home/ubuntu/DiscordBot-Music
+source .venv/bin/activate
+pip install -r requirements.txt
+deactivate
+
+# Restart the service to pick up changes
+sudo systemctl restart discordbot
+
+Notes
+
+Keep cookies.txt (if you use one) in the working directory so the service can read it. Replace it when you refresh cookies—no service change needed.
+
+If you ever move the project folder or change the venv location, update the service file and daemon-reload + restart.
