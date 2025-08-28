@@ -12,6 +12,10 @@ import random
 import itertools
 # In your main script file
 from credentials import DISCORD_BOT_TOKEN, SPOTIFY_CLIENT_ID, SPOTIFY_CLIENT_SECRET
+# Youtube Playlists
+
+import re
+from urllib.parse import urlparse, parse_qs
 
 
 # Define the required intents
@@ -77,6 +81,22 @@ ytdl_format_options = {
     'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
     'options': '-vn -bufsize 4096k'
 }
+
+# A separate yt_dlp instance for playlists (flat, fast, no downloads)
+playlist_ytdl_opts = {
+    "quiet": True,
+    "no_warnings": True,
+    "extract_flat": True,          # don't resolve each video fully; we only need URLs/ids
+    "skip_download": True,
+    "cookiefile": "cookies.txt",   # optional; remove if you don't use cookies
+    "source_address": "0.0.0.0",
+    # We'll set playlistend dynamically from --limit, but keep a sensible default:
+    "playlistend": 100,
+    "default_search": "auto",
+}
+
+playlist_ytdl = youtube_dl.YoutubeDL(playlist_ytdl_opts)
+
 
 
 ffmpeg_options = {
@@ -446,28 +466,114 @@ async def clear(ctx):
 async def skip_command(ctx):
     await skip(ctx)
 
-@bot.command()
-async def spam(ctx, user: discord.User):
-    """Starts spamming the mentioned user. Format: !spam [tagUserHere]"""
-    global spamming_task, spam_target
+# @bot.command()
+# async def spam(ctx, user: discord.User):
+#     """Starts spamming the mentioned user. Format: !spam [tagUserHere]"""
+#     global spamming_task, spam_target
     
-    if spamming_task is None:
-        spam_target = user
-        spamming_task = spam_user.start(ctx, user)
-        await ctx.send(f"Started spamming {user.mention}.")
-    else:
-        spam_user.cancel()
-        spamming_task = None
-        spam_target = None
-        await ctx.send("Stopped spamming.")
+#     if spamming_task is None:
+#         spam_target = user
+#         spamming_task = spam_user.start(ctx, user)
+#         await ctx.send(f"Started spamming {user.mention}.")
+#     else:
+#         spam_user.cancel()
+#         spamming_task = None
+#         spam_target = None
+#         await ctx.send("Stopped spamming.")
 
-@tasks.loop(seconds=0.5)
-async def spam_user(ctx, user: discord.User):
-    await ctx.send(f"{user.mention}")
+# @tasks.loop(seconds=0.5)
+# async def spam_user(ctx, user: discord.User):
+#     await ctx.send(f"{user.mention}")
 
-@spam_user.before_loop
-async def before_spam_user():
-    await bot.wait_until_ready()
+# @spam_user.before_loop
+# async def before_spam_user():
+#     await bot.wait_until_ready()
+
+def _is_youtube_playlist(url: str) -> bool:
+    """Basic check: is a YouTube/YouTube Music URL with a 'list' param."""
+    try:
+        p = urlparse(url)
+        if "youtube.com" in p.netloc or "music.youtube.com" in p.netloc:
+            qs = parse_qs(p.query)
+            return "list" in qs and len(qs["list"]) > 0
+        return False
+    except Exception:
+        return False
+
+@bot.command(aliases=["ytpl", "ytmplaylist"])
+async def ytplaylist(ctx, *, arg: str):
+    """
+    Queues all tracks from a YouTube / YouTube Music playlist.
+    Usage:
+      !ytplaylist <playlist_url> [--limit N]
+    """
+    import re
+    from urllib.parse import urlparse, parse_qs
+
+    def _is_youtube_playlist(url: str) -> bool:
+        try:
+            p = urlparse(url)
+            if "youtube.com" in p.netloc or "music.youtube.com" in p.netloc:
+                qs = parse_qs(p.query)
+                return "list" in qs and len(qs["list"]) > 0
+            return False
+        except Exception:
+            return False
+
+    # Parse optional --limit N
+    limit = None
+    m = re.search(r"--limit\s+(\d+)", arg)
+    if m:
+        try:
+            limit = max(1, int(m.group(1)))
+        except ValueError:
+            pass
+        arg = arg[:m.start()].strip()
+
+    url = arg.strip()
+
+    if not _is_youtube_playlist(url):
+        await ctx.send("Please provide a valid YouTube/YouTube Music playlist URL (with `list=`).")
+        return
+
+    # Clone base opts and apply limit if provided
+    opts = dict(playlist_ytdl_opts)
+    if limit:
+        opts["playlistend"] = limit
+
+    ydl = youtube_dl.YoutubeDL(opts)
+
+    try:
+        loop = asyncio.get_running_loop()
+        # ✅ discord.py 2.x: use ctx.typing() as a context manager
+        async with ctx.typing():
+            info = await loop.run_in_executor(None, lambda: ydl.extract_info(url, download=False))
+    except Exception as e:
+        await ctx.send(f"Failed to read playlist: {e}")
+        return
+
+    if not info or "entries" not in info or not info["entries"]:
+        await ctx.send("No videos found in that playlist.")
+        return
+
+    entries = [e for e in info["entries"] if e]
+    added = 0
+    for e in entries:
+        vid_url = e.get("url") or e.get("id")
+        if not vid_url:
+            continue
+        if not str(vid_url).startswith("http"):
+            vid_url = f"https://www.youtube.com/watch?v={vid_url}"
+        song_queue.append(vid_url)
+        added += 1
+
+    title = info.get("title", "playlist")
+    await ctx.send(f"📃 Queued **{added}** tracks from **{title}**.")
+
+    if not ctx.voice_client or not ctx.voice_client.is_playing():
+        await start.invoke(ctx)
+
+
 
 
 
